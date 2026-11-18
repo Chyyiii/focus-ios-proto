@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Environment info
         run: |
@@ -59,6 +59,33 @@ jobs:
           chmod +x scripts/verify_build.sh
           scripts/verify_build.sh build/DerivedData 2>&1 | tee build/verify.log
 
+      - name: Pick iPhone simulator
+        id: sim
+        run: |
+          xcrun simctl list devices available 2>&1 | tee build/simulators.log
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; c=[x for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone') and x.get('isAvailable', True)]; print(c[0]['udid'])")
+          echo "Selected simulator: $UDID" | tee -a build/simulators.log
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Unit tests (iOS Simulator, no signing)
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project FocusProto.xcodeproj \
+            -scheme FocusProto \
+            -sdk iphonesimulator \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build/DerivedDataTests \
+            -resultBundlePath build/tests.xcresult \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee build/xcodetest.log
+
+      - name: Verify tests actually ran
+        run: |
+          grep -E "Executed [1-9][0-9]* tests?, with 0 failures" build/xcodetest.log | tail -n 1 > build/tests-summary.log || true
+          cat build/tests-summary.log
+          test -s build/tests-summary.log
+
       - name: Package simulator app
         if: success()
         run: ditto -c -k --keepParent build/DerivedData/Build/Products/Debug-iphonesimulator/FocusProto.app build/FocusProto-simulator.app.zip
@@ -67,16 +94,22 @@ jobs:
         if: always()
         run: |
           {
-            echo "## iOS build summary"
+            echo "## iOS build + tests summary"
             echo
-            echo "- warnings: $(grep -c 'warning:' build/xcodebuild.log 2>/dev/null || true)"
-            echo "- errors: $(grep -c 'error:' build/xcodebuild.log 2>/dev/null || true)"
+            echo "- build warnings: $(grep -c 'warning:' build/xcodebuild.log 2>/dev/null || true)"
+            echo "- build errors: $(grep -c 'error:' build/xcodebuild.log 2>/dev/null || true)"
+            echo "- tests: $(cat build/tests-summary.log 2>/dev/null || echo 'did not run / failed')"
             echo
             echo '```'
             tail -n 15 build/verify.log 2>/dev/null || echo "verify step did not run"
             echo '```'
             echo
-            echo "### Warnings and errors (first 40 lines)"
+            echo "### Failed tests (if any)"
+            echo '```'
+            grep -E "error:|failed" build/xcodetest.log 2>/dev/null | head -n 40 || true
+            echo '```'
+            echo
+            echo "### Build warnings and errors (first 40 lines)"
             echo '```'
             grep -E 'warning:|error:' build/xcodebuild.log 2>/dev/null | head -n 40 || true
             echo '```'
@@ -84,7 +117,7 @@ jobs:
 
       - name: Upload logs and artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ios-build-${{ github.run_number }}
           if-no-files-found: warn
@@ -92,4 +125,5 @@ jobs:
           path: |
             build/*.log
             build/result.xcresult
+            build/tests.xcresult
             build/FocusProto-simulator.app.zip
