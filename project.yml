@@ -18,6 +18,7 @@ targets:
     platform: iOS
     sources:
       - path: App
+      - path: Shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.focusproto.app
@@ -37,6 +38,7 @@ targets:
     platform: iOS
     sources:
       - path: Widget
+      - path: Shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.focusproto.app.widget
@@ -48,9 +50,22 @@ targets:
         CFBundleDisplayName: FOCUS
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  FocusProtoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.focusproto.tests
+        GENERATE_INFOPLIST_FILE: "YES"
 schemes:
   FocusProto:
     build:
       targets:
         FocusProto: all
         FocusWidget: all
+    test:
+      targets:
+        - FocusProtoTests
