@@ -1,0 +1,95 @@
+name: iOS build (simulator, unsigned)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Environment info
+        run: |
+          mkdir -p build
+          {
+            sw_vers
+            xcodebuild -version
+            xcrun --sdk iphonesimulator --show-sdk-version
+            swift --version
+          } 2>&1 | tee build/environment.log
+
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install xcodegen 2>&1 | tee build/xcodegen-install.log
+
+      - name: Generate Xcode project
+        run: xcodegen generate 2>&1 | tee build/xcodegen.log
+
+      - name: Build app + widget (iOS Simulator, no signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project FocusProto.xcodeproj \
+            -scheme FocusProto \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/result.xcresult \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build/xcodebuild.log
+
+      - name: Verify build output
+        run: |
+          chmod +x scripts/verify_build.sh
+          scripts/verify_build.sh build/DerivedData 2>&1 | tee build/verify.log
+
+      - name: Package simulator app
+        if: success()
+        run: ditto -c -k --keepParent build/DerivedData/Build/Products/Debug-iphonesimulator/FocusProto.app build/FocusProto-simulator.app.zip
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## iOS build summary"
+            echo
+            echo "- warnings: $(grep -c 'warning:' build/xcodebuild.log 2>/dev/null || true)"
+            echo "- errors: $(grep -c 'error:' build/xcodebuild.log 2>/dev/null || true)"
+            echo
+            echo '```'
+            tail -n 15 build/verify.log 2>/dev/null || echo "verify step did not run"
+            echo '```'
+            echo
+            echo "### Warnings and errors (first 40 lines)"
+            echo '```'
+            grep -E 'warning:|error:' build/xcodebuild.log 2>/dev/null | head -n 40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-${{ github.run_number }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build/*.log
+            build/result.xcresult
+            build/FocusProto-simulator.app.zip
