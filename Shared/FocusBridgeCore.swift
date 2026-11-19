@@ -118,9 +118,16 @@ final class AppGroupSnapshotStore {
     let directory: URL
     private let store: SnapshotStore
 
+    // Поставщик контейнера App Group. По умолчанию — системный; в тестах можно передать closure, возвращающий nil.
+    typealias ContainerProvider = (String) -> URL?
+    static let systemContainerProvider: ContainerProvider = { identifier in
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)
+    }
+
     // Реальный App Group. Бросает containerUnavailable, если контейнер недоступен (нет entitlement/подписи).
-    init(groupIdentifier: String = AppGroupSnapshotStore.defaultGroupIdentifier) throws {
-        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else {
+    init(groupIdentifier: String = AppGroupSnapshotStore.defaultGroupIdentifier,
+         containerProvider: ContainerProvider = AppGroupSnapshotStore.systemContainerProvider) throws {
+        guard let container = containerProvider(groupIdentifier) else {
             throw AppGroupStoreError.containerUnavailable
         }
         let dir = container.appendingPathComponent("widget", isDirectory: true)
