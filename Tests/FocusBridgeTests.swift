@@ -178,9 +178,20 @@ final class FocusBridgeTests: XCTestCase {
     }
 
     func testMissingAppGroupHandled() {
-        XCTAssertThrowsError(try AppGroupSnapshotStore(groupIdentifier: "group.invalid.nonexistent.focus")) {
+        // Контейнер недоступен (поставщик возвращает nil) — должен быть именно .containerUnavailable.
+        XCTAssertThrowsError(try AppGroupSnapshotStore(containerProvider: { _ in nil })) {
             XCTAssertEqual($0 as? AppGroupStoreError, .containerUnavailable)
         }
+    }
+
+    func testAvailableContainerProviderUsedWithWidgetSubdirectory() throws {
+        let base = tempDir()
+        let store = try AppGroupSnapshotStore(groupIdentifier: "group.test", containerProvider: { id in
+            XCTAssertEqual(id, "group.test")
+            return base
+        })
+        XCTAssertEqual(store.directory.lastPathComponent, "widget")
+        XCTAssertTrue(store.directory.path.hasPrefix(base.path))
     }
 
     func testEmptyStoreIsNoData() {

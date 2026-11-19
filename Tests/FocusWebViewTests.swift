@@ -95,26 +95,58 @@ final class FocusWebViewTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.primaryURL.path))
     }
 
-    func testExternalNavigationBlocked() throws {
-        try load(page(script: "setTimeout(function(){ location.href = 'https://example.com/'; }, 200);"))
-        waitUntil { self.events.contains(.navigationBlocked("https")) }
-        XCTAssertTrue(events.contains(.navigationBlocked("https")), "события: \(events)")
-        XCTAssertEqual(webView.url?.isFileURL, true)
+    // Обычная страница; ждём .pageLoaded (холодный старт WebKit в тестах может быть долгим), затем сбрасываем события.
+    private func loadPlainPageAndWait() throws {
+        try load(page(script: ""))
+        waitUntil(60) { self.events.contains(.pageLoaded) }
+        XCTAssertTrue(events.contains(.pageLoaded), "страница не загрузилась: \(events)")
+        events.removeAll()
     }
 
-    func testUnknownSchemeAndForeignFileBlocked() throws {
-        try load(page(script: "setTimeout(function(){ location.href = 'focus-app://finance'; }, 200); setTimeout(function(){ location.href = 'file:///etc/hosts'; }, 600);"))
-        waitUntil { self.events.filter { $0 == .navigationBlocked("file") }.count >= 1 }
+    // Настоящий переход из JS: проходит через WKNavigationDelegate.decidePolicyFor.
+    private func navigate(to target: String) {
+        webView.evaluateJavaScript("location.href = '\(target)';", completionHandler: nil)
+    }
+
+    private func assertStillOnLocalPage(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(webView.url?.isFileURL, true, "url: \(String(describing: webView.url))", file: file, line: line)
+        XCTAssertEqual(webView.url?.lastPathComponent, "index.html", file: file, line: line)
+        XCTAssertFalse(webView.isLoading, file: file, line: line)
+    }
+
+    func testExternalNavigationBlocked() throws {
+        try loadPlainPageAndWait()
+        navigate(to: "https://example.com/")
+        waitUntil { self.events.contains(.navigationBlocked("https")) }
+        XCTAssertTrue(events.contains(.navigationBlocked("https")), "события: \(events)")
+        assertStillOnLocalPage()
+    }
+
+    func testUnknownSchemeBlocked() throws {
+        try loadPlainPageAndWait()
+        navigate(to: "focus-app://finance")
+        waitUntil { self.events.contains(.navigationBlocked("focus-app")) }
         XCTAssertTrue(events.contains(.navigationBlocked("focus-app")), "события: \(events)")
+        XCTAssertFalse(events.contains(.deepLinkToday))
+        assertStillOnLocalPage()
+    }
+
+    func testForeignFileBlocked() throws {
+        try loadPlainPageAndWait()
+        navigate(to: "file:///etc/hosts")
+        waitUntil { self.events.contains(.navigationBlocked("file")) }
         XCTAssertTrue(events.contains(.navigationBlocked("file")), "события: \(events)")
-        XCTAssertEqual(webView.url?.isFileURL, true)
+        assertStillOnLocalPage()
+        XCTAssertNotEqual(webView.url?.path, "/etc/hosts")
     }
 
     func testDeepLinkTodayHandledNatively() throws {
-        try load(page(script: "setTimeout(function(){ location.href = 'focus-app://today'; }, 200);"))
+        try loadPlainPageAndWait()
+        navigate(to: "focus-app://today")
         waitUntil { self.events.contains(.deepLinkToday) }
         XCTAssertTrue(events.contains(.deepLinkToday), "события: \(events)")
-        XCTAssertEqual(webView.url?.isFileURL, true)
+        XCTAssertFalse(events.contains(where: { if case .navigationBlocked = $0 { return true } else { return false } }), "события: \(events)")
+        assertStillOnLocalPage()
     }
 
     func testNetworkRulesCompile() {
