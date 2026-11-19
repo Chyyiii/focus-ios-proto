@@ -103,9 +103,21 @@ final class FocusWebViewTests: XCTestCase {
         events.removeAll()
     }
 
-    // Настоящий переход из JS: проходит через WKNavigationDelegate.decidePolicyFor.
-    private func navigate(to target: String) {
-        webView.evaluateJavaScript("location.href = '\(target)';", completionHandler: nil)
+    // Настоящие переходы из страницы (проходят через WKNavigationDelegate). Пробуем способы по очереди,
+    // пока делегат не получит ожидаемое событие. Возвращает название сработавшего способа (nil — ни один).
+    @discardableResult
+    private func navigateFromPage(to target: String, expecting event: FocusBridgeEvent) -> String? {
+        let scripts: [(String, String)] = [
+            ("location.href", "location.href = '\(target)';"),
+            ("anchor click", "var a = document.createElement('a'); a.href = '\(target)'; document.body.appendChild(a); a.click();"),
+            ("location.assign", "window.location.assign('\(target)');")
+        ]
+        for (name, js) in scripts {
+            webView.evaluateJavaScript(js, completionHandler: nil)
+            waitUntil(6) { self.events.contains(event) }
+            if events.contains(event) { return name }
+        }
+        return nil
     }
 
     private func assertStillOnLocalPage(file: StaticString = #filePath, line: UInt = #line) {
@@ -116,24 +128,32 @@ final class FocusWebViewTests: XCTestCase {
 
     func testExternalNavigationBlocked() throws {
         try loadPlainPageAndWait()
-        navigate(to: "https://example.com/")
-        waitUntil { self.events.contains(.navigationBlocked("https")) }
-        XCTAssertTrue(events.contains(.navigationBlocked("https")), "события: \(events)")
+        let via = navigateFromPage(to: "https://example.com/", expecting: .navigationBlocked("https"))
+        XCTAssertNotNil(via, "события: \(events)")
         assertStillOnLocalPage()
     }
 
     func testUnknownSchemeBlocked() throws {
         try loadPlainPageAndWait()
-        navigate(to: "focus-app://finance")
-        waitUntil { self.events.contains(.navigationBlocked("focus-app")) }
-        XCTAssertTrue(events.contains(.navigationBlocked("focus-app")), "события: \(events)")
+        let via = navigateFromPage(to: "focus-app://finance", expecting: .navigationBlocked("focus-app"))
+        XCTAssertNotNil(via, "события: \(events), url: \(String(describing: webView.url))")
         XCTAssertFalse(events.contains(.deepLinkToday))
         assertStillOnLocalPage()
     }
 
-    func testForeignFileBlocked() throws {
+    func testForeignFileBlockedWhenPageNavigates() throws {
         try loadPlainPageAndWait()
-        navigate(to: "file:///etc/hosts")
+        let via = navigateFromPage(to: "file:///etc/hosts", expecting: .navigationBlocked("file"))
+        // Допустимо два исхода: делегат отклонил переход (via != nil) либо WebKit сам не начал переход
+        // (за пределами allowingReadAccessTo). В обоих случаях /etc/hosts не должен открыться.
+        print("DIAG foreign-file page navigation: via=\(via ?? "none") events=\(events) url=\(String(describing: webView.url))")
+        assertStillOnLocalPage()
+        XCTAssertNotEqual(webView.url?.path, "/etc/hosts")
+    }
+
+    func testForeignFileBlockedByDelegateOnLoad() throws {
+        try loadPlainPageAndWait()
+        webView.load(URLRequest(url: URL(fileURLWithPath: "/etc/hosts")))
         waitUntil { self.events.contains(.navigationBlocked("file")) }
         XCTAssertTrue(events.contains(.navigationBlocked("file")), "события: \(events)")
         assertStillOnLocalPage()
@@ -142,10 +162,18 @@ final class FocusWebViewTests: XCTestCase {
 
     func testDeepLinkTodayHandledNatively() throws {
         try loadPlainPageAndWait()
-        navigate(to: "focus-app://today")
+        let via = navigateFromPage(to: "focus-app://today", expecting: .deepLinkToday)
+        print("DIAG deep-link page navigation: via=\(via ?? "none") events=\(events) url=\(String(describing: webView.url))")
+        XCTAssertNotNil(via, "ни один способ перехода из страницы не дошёл до делегата. события: \(events)")
+        XCTAssertFalse(events.contains(where: { if case .navigationBlocked = $0 { return true } else { return false } }), "события: \(events)")
+        assertStillOnLocalPage()
+    }
+
+    func testDeepLinkTodayHandledByDelegateOnLoad() throws {
+        try loadPlainPageAndWait()
+        webView.load(URLRequest(url: URL(string: "focus-app://today")!))
         waitUntil { self.events.contains(.deepLinkToday) }
         XCTAssertTrue(events.contains(.deepLinkToday), "события: \(events)")
-        XCTAssertFalse(events.contains(where: { if case .navigationBlocked = $0 { return true } else { return false } }), "события: \(events)")
         assertStillOnLocalPage()
     }
 
