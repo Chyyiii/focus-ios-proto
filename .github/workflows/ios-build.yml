@@ -2,7 +2,7 @@ name: iOS build (simulator, unsigned)
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -30,6 +30,12 @@ jobs:
             xcrun --sdk iphonesimulator --show-sdk-version
             swift --version
           } 2>&1 | tee build/environment.log
+
+      - name: Check embedded web copy (SHA matches web-manifest)
+        run: |
+          python3 scripts/web_patch.py --check Web/index.html 2>&1 | tee build/web-check.log
+          grep -c '"baseSha256": "cb4262abefc087eb901d98573ef2c7f1c8addad8270b7f792d92e85e023c9105"' Web/web-manifest.json
+          node --check Web/FocusSnapshotSender.js && echo "sender js syntax OK" | tee -a build/web-check.log
 
       - name: Install XcodeGen
         env:
@@ -86,6 +92,26 @@ jobs:
           cat build/tests-summary.log
           test -s build/tests-summary.log
 
+      - name: E2E (unsigned simulator build, informational)
+        id: e2e_unsigned
+        continue-on-error: true
+        run: scripts/e2e_sim.sh "${{ steps.sim.outputs.udid }}" build/DerivedData/Build/Products/Debug-iphonesimulator/FocusProto.app unsigned 2>&1 | tee build/e2e-unsigned.log
+
+      - name: Build with ad-hoc signing (simulator)
+        id: adhoc_build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild -project FocusProto.xcodeproj -scheme FocusProto -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build/DerivedDataAdhoc \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- build 2>&1 | tee build/xcodebuild-adhoc.log
+
+      - name: E2E (ad-hoc signed simulator build, informational)
+        id: e2e_adhoc
+        continue-on-error: true
+        if: steps.adhoc_build.outcome == 'success'
+        run: scripts/e2e_sim.sh "${{ steps.sim.outputs.udid }}" build/DerivedDataAdhoc/Build/Products/Debug-iphonesimulator/FocusProto.app adhoc 2>&1 | tee build/e2e-adhoc.log
+
       - name: Package simulator app
         if: success()
         run: ditto -c -k --keepParent build/DerivedData/Build/Products/Debug-iphonesimulator/FocusProto.app build/FocusProto-simulator.app.zip
@@ -99,6 +125,9 @@ jobs:
             echo "- build warnings: $(grep -c 'warning:' build/xcodebuild.log 2>/dev/null || true)"
             echo "- build errors: $(grep -c 'error:' build/xcodebuild.log 2>/dev/null || true)"
             echo "- tests: $(cat build/tests-summary.log 2>/dev/null || echo 'did not run / failed')"
+            echo "- web copy check: $(tail -n 1 build/web-check.log 2>/dev/null)"
+            echo "- e2e unsigned (App Group → snapshot): ${{ steps.e2e_unsigned.outcome }}"
+            echo "- e2e ad-hoc signed: ${{ steps.e2e_adhoc.outcome }}"
             echo
             echo '```'
             tail -n 15 build/verify.log 2>/dev/null || echo "verify step did not run"
@@ -124,6 +153,8 @@ jobs:
           retention-days: 14
           path: |
             build/*.log
+            build/e2e-unsigned/
+            build/e2e-adhoc/
             build/result.xcresult
             build/tests.xcresult
             build/FocusProto-simulator.app.zip

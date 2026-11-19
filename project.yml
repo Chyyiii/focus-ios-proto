@@ -9,6 +9,7 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.0.1"
     CURRENT_PROJECT_VERSION: "1"
+    # B1: сборка только для симулятора, без подписи, без секретов
     CODE_SIGNING_ALLOWED: "NO"
     CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGN_IDENTITY: ""
@@ -19,10 +20,14 @@ targets:
     sources:
       - path: App
       - path: Shared
+      - path: Bridge
+      - path: Web
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.focusproto.app
         TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_ENTITLEMENTS: Config/FocusProto.entitlements
     info:
       path: App/Info.plist
       properties:
@@ -30,6 +35,10 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        CFBundleURLTypes:
+          - CFBundleURLName: com.focusproto.app
+            CFBundleURLSchemes:
+              - focus-app
     dependencies:
       - target: FocusWidget
         embed: true
@@ -44,6 +53,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.focusproto.app.widget
         TARGETED_DEVICE_FAMILY: "1"
         SKIP_INSTALL: "YES"
+        CODE_SIGN_ENTITLEMENTS: Config/FocusWidget.entitlements
     info:
       path: Widget/Info.plist
       properties:
@@ -56,6 +66,9 @@ targets:
     sources:
       - path: Tests
       - path: Shared
+      - path: Bridge
+      - path: Web/FocusSnapshotSender.js
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.focusproto.tests

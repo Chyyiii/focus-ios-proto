@@ -1,0 +1,9 @@
+{
+  "baseRepo": "Chyyiii/focus",
+  "baseCommit": "00f7e5eed3416d08956c7980fcf082202f2b9b34",
+  "baseSha256": "cb4262abefc087eb901d98573ef2c7f1c8addad8270b7f792d92e85e023c9105",
+  "baseGitBlob": "dce1b311aee5feaac8ef2f1eefdf35d690d3006a",
+  "patchedSha256": "b80fb2786e169215a8da8ad8468ab20f69c77bcdeb2f26d8015c17e14c2f0390",
+  "snapshotSchema": 1,
+  "bridgeMessage": "focusSnapshot"
+}
