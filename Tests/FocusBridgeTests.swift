@@ -102,6 +102,14 @@ final class FocusBridgeTests: XCTestCase {
         XCTAssertEqual(FocusNavigationPolicy.decide(URL(string: "about:blank")!, webRoot: root), .allow)
     }
 
+    // about:blank разрешён только как точная строка; близкие варианты отклоняются.
+    func testAboutBlankIsExactMatchOnly() {
+        let root = URL(fileURLWithPath: "/tmp/web", isDirectory: true)
+        for bad in ["about:blank#x", "about:blank?x=1", "about:srcdoc", "about:", "about:blank/", "ABOUT:BLANK2"] {
+            XCTAssertEqual(FocusNavigationPolicy.decide(URL(string: bad)!, webRoot: root), .cancel, bad)
+        }
+    }
+
     func testSymlinkEscapeBlocked() throws {
         let root = tempDir().appendingPathComponent("web", isDirectory: true)
         let outside = tempDir()

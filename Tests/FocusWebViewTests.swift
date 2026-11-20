@@ -7,6 +7,8 @@ final class FocusWebViewTests: XCTestCase {
     private var dir: URL!
     private var webView: WKWebView!
     private var events: [FocusBridgeEvent] = []
+    private var decisions: [(URL, FocusNavigationPolicy.Decision)] = []
+    private static var coldStartSeconds: TimeInterval?
     private var navDelegate: FocusNavigationDelegate!
     private var store: AppGroupSnapshotStore!
     private var stored: XCTestExpectation?
@@ -19,6 +21,7 @@ final class FocusWebViewTests: XCTestCase {
         try FileManager.default.copyItem(at: sender, to: dir.appendingPathComponent("FocusSnapshotSender.js"))
         store = AppGroupSnapshotStore(directory: dir.appendingPathComponent("store", isDirectory: true))
         events = []
+        decisions = []
     }
 
     private func nowISO() -> String { return ISO8601DateFormatter().string(from: Date()) }
@@ -29,6 +32,7 @@ final class FocusWebViewTests: XCTestCase {
         let config = FocusWebConfig.makeConfiguration(handler: handler)
         let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 600), configuration: config)
         navDelegate = FocusNavigationDelegate(webRoot: dir, onEvent: { [unowned self] in self.events.append($0) })
+        navDelegate.onDecision = { [unowned self] url, decision in self.decisions.append((url, decision)) }
         web.navigationDelegate = navDelegate
         return web
     }
@@ -95,12 +99,20 @@ final class FocusWebViewTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.primaryURL.path))
     }
 
-    // Обычная страница; ждём .pageLoaded (холодный старт WebKit в тестах может быть долгим), затем сбрасываем события.
+    // Обычная страница. Первый запуск WebKit в процессе тестов («холодный старт») бывал дольше 60 с
+    // (один такой случай в CI), поэтому для него отдельный бюджет 120 с; дальше процесс тёплый — 30 с.
+    // Время загрузки печатается строкой DIAG, чтобы значения можно было пересмотреть по данным.
     private func loadPlainPageAndWait() throws {
+        let cold = FocusWebViewTests.coldStartSeconds == nil
+        let started = Date()
         try load(page(script: ""))
-        waitUntil(150) { self.events.contains(.pageLoaded) }
-        XCTAssertTrue(events.contains(.pageLoaded), "страница не загрузилась: \(events)")
+        waitUntil(cold ? 120 : 30) { self.events.contains(.pageLoaded) }
+        let took = Date().timeIntervalSince(started)
+        if cold { FocusWebViewTests.coldStartSeconds = took }
+        print("DIAG pageLoaded in \(String(format: "%.1f", took))s (cold=\(cold))")
+        XCTAssertTrue(events.contains(.pageLoaded), "страница не загрузилась за \(String(format: "%.1f", took))s (cold=\(cold)): \(events)")
         events.removeAll()
+        decisions.removeAll()
     }
 
     // Настоящие переходы из страницы (проходят через WKNavigationDelegate). Пробуем способы по очереди,
@@ -141,14 +153,45 @@ final class FocusWebViewTests: XCTestCase {
         assertStillOnLocalPage()
     }
 
+    private func isForeign(_ url: URL) -> Bool {
+        return url.isFileURL && !url.resolvingSymlinksInPath().path.hasPrefix(dir.resolvingSymlinksInPath().path + "/")
+    }
+
+    // Переход из страницы на чужой файл. Кто именно остановил (делегат или сам WebKit), печатается в DIAG.
+    // Инварианты безопасности: чужой файл не открылся; если делегата спросили — он ответил «отмена» с событием.
+    // Что делегат блокирует чужой file:// детерминированно, проверяет FocusNavigationDelegateTests.
     func testForeignFileBlockedWhenPageNavigates() throws {
         try loadPlainPageAndWait()
         let via = navigateFromPage(to: "file:///etc/hosts", expecting: .navigationBlocked("file"))
-        // Допустимо два исхода: делегат отклонил переход (via != nil) либо WebKit сам не начал переход
-        // (за пределами allowingReadAccessTo). В обоих случаях /etc/hosts не должен открыться.
-        print("DIAG foreign-file page navigation: via=\(via ?? "none") events=\(events) url=\(String(describing: webView.url))")
+        let consulted = decisions.filter { isForeign($0.0) }
+        let by = via.map { "delegate(\($0))" } ?? "WebKit-before-delegate"
+        print("DIAG foreign-file page navigation: blockedBy=\(by) consulted=\(consulted.count) events=\(events) url=\(String(describing: webView.url))")
+        XCTAssertFalse(consulted.contains(where: { $0.1 != .cancel }), "делегат разрешил чужой файл: \(consulted)")
+        if !consulted.isEmpty { XCTAssertTrue(events.contains(.navigationBlocked("file")), "события: \(events)") }
         assertStillOnLocalPage()
         XCTAssertNotEqual(webView.url?.path, "/etc/hosts")
+    }
+
+    func testForeignFileInIframeNotAllowed() throws {
+        try load("<!doctype html><html><body><iframe src=\"file:///etc/hosts\"></iframe></body></html>")
+        waitUntil(FocusWebViewTests.coldStartSeconds == nil ? 120 : 30) { self.events.contains(.pageLoaded) }
+        FocusWebViewTests.coldStartSeconds = FocusWebViewTests.coldStartSeconds ?? 0
+        waitUntil(8) { self.events.contains(.navigationBlocked("file")) }
+        let consulted = decisions.filter { isForeign($0.0) }
+        print("DIAG foreign-file iframe: consulted=\(consulted.count) events=\(events)")
+        XCTAssertFalse(consulted.contains(where: { $0.1 != .cancel }), "делегат разрешил чужой файл в iframe: \(consulted)")
+        assertStillOnLocalPage()
+    }
+
+    // Диагностика пути, недоступного странице: нативный webView.load(file:///etc/hosts).
+    // Раньше этот вызов открыл файл без события — выясняем, спрашивают ли делегата. Приложение так не делает.
+    func testNativeLoadOfForeignFileDiagnostic() throws {
+        try loadPlainPageAndWait()
+        webView.load(URLRequest(url: URL(fileURLWithPath: "/etc/hosts")))
+        waitUntil(8) { self.events.contains(.navigationBlocked("file")) }
+        let consulted = decisions.filter { isForeign($0.0) }
+        print("DIAG native load foreign file: consulted=\(consulted.count) decisions=\(consulted.map { $0.1 }) events=\(events) url=\(String(describing: webView.url))")
+        XCTAssertFalse(consulted.contains(where: { $0.1 != .cancel }), "делегат разрешил чужой файл: \(consulted)")
     }
 
     func testDeepLinkTodayHandledNatively() throws {
@@ -157,6 +200,14 @@ final class FocusWebViewTests: XCTestCase {
         print("DIAG deep-link page navigation: via=\(via ?? "none") events=\(events) url=\(String(describing: webView.url))")
         XCTAssertNotNil(via, "ни один способ перехода из страницы не дошёл до делегата. события: \(events)")
         XCTAssertFalse(events.contains(where: { if case .navigationBlocked = $0 { return true } else { return false } }), "события: \(events)")
+        assertStillOnLocalPage()
+    }
+
+    func testDeepLinkTodayHandledByDelegateOnLoad() throws {
+        try loadPlainPageAndWait()
+        webView.load(URLRequest(url: URL(string: "focus-app://today")!))
+        waitUntil(15) { self.events.contains(.deepLinkToday) }
+        XCTAssertTrue(events.contains(.deepLinkToday), "события: \(events)")
         assertStillOnLocalPage()
     }
 
