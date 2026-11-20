@@ -109,6 +109,9 @@ final class FocusBridgeHandler: NSObject, WKScriptMessageHandler {
 final class FocusNavigationDelegate: NSObject, WKNavigationDelegate {
     private let webRoot: URL?
     private let onEvent: (FocusBridgeEvent) -> Void
+    // Необязательный хук наблюдения (тесты/диагностика): вызывается для КАЖДОГО решения, в т.ч. «разрешить».
+    // На решения не влияет.
+    var onDecision: ((URL, FocusNavigationPolicy.Decision) -> Void)?
 
     init(webRoot: URL?, onEvent: @escaping (FocusBridgeEvent) -> Void) {
         self.webRoot = webRoot
@@ -122,7 +125,9 @@ final class FocusNavigationDelegate: NSObject, WKNavigationDelegate {
             onEvent(.navigationBlocked("nil"))
             return
         }
-        switch FocusNavigationPolicy.decide(url, webRoot: webRoot) {
+        let decision = FocusNavigationPolicy.decide(url, webRoot: webRoot)
+        onDecision?(url, decision)
+        switch decision {
         case .allow:
             decisionHandler(.allow)
         case .deepLinkToday:
